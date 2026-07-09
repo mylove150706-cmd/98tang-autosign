@@ -634,9 +634,8 @@ class SignInManager:
 
     def _perform_signin_action(self) -> bool:
         try:
-            self.logger.info("通过 Selenium 点击签到按钮")
+            self.logger.info("尝试用 JavaScript 触发签到")
 
-            # 查找红色签到按钮
             sign_btn = self.element_finder.find_by_selectors(
                 ["a.ddpc_sign_btn_red", "//a[contains(@class, 'ddpc_sign_btn_red')]"]
             )
@@ -644,11 +643,42 @@ class SignInManager:
                 self.logger.error("未找到签到按钮")
                 return False
 
-            self.logger.info("找到签到按钮，准备点击")
-            BrowserHelper.safe_click(self.driver, sign_btn, self.logger)
-            TimingManager.smart_wait(3.0, 1.0, self.logger)
+            btn_html = sign_btn.get_attribute("outerHTML") or ""
+            self.logger.debug(f"签到按钮 HTML: {btn_html[:300]}")
 
-            # 检查是否有弹窗 alert
+            # 注入 AJAX 拦截器，捕获签到请求
+            self.driver.execute_script("""
+                window.__signCaptured = null;
+                var origOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    this.__signUrl = url;
+                    this.__signMethod = method;
+                    return origOpen.apply(this, arguments);
+                };
+                var origSend = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.send = function(data) {
+                    var xhr = this;
+                    xhr.addEventListener('load', function() {
+                        var url = (xhr.__signUrl || '').toLowerCase();
+                        if (url.indexOf('dd_sign') !== -1 || url.indexOf('sign') !== -1) {
+                            window.__signCaptured = {
+                                url: xhr.__signUrl,
+                                method: xhr.__signMethod || 'POST',
+                                status: xhr.status,
+                                response: (xhr.responseText || '').substring(0, 2000)
+                            };
+                        }
+                    });
+                    return origSend.apply(this, arguments);
+                };
+            """)
+
+            # 用 JavaScript 强制点击
+            self.logger.info("通过 execute_script 点击签到按钮")
+            self.driver.execute_script("arguments[0].click();", sign_btn)
+            TimingManager.smart_wait(5.0, 1.0, self.logger)
+
+            # 检查是否有 alert 弹窗
             try:
                 from selenium.webdriver.support.ui import WebDriverWait
                 from selenium.webdriver.support import expected_conditions as EC
@@ -658,6 +688,14 @@ class SignInManager:
                 alert.accept()
             except:
                 self.logger.debug("未检测到 alert 弹窗")
+
+            # 获取拦截到的 AJAX 请求信息
+            captured = self.driver.execute_script("return window.__signCaptured")
+            if captured:
+                self.logger.info(f"签到 AJAX 请求: {captured['method']} {captured['url']} (状态: {captured.get('status')})")
+                self.logger.info(f"签到 AJAX 响应: {(captured.get('response') or '')[:500]}")
+            else:
+                self.logger.warning("未捕获到签到相关 AJAX 请求")
 
             # 刷新页面并检查签到按钮状态
             self.driver.refresh()
@@ -671,7 +709,7 @@ class SignInManager:
                 return False
 
         except Exception as e:
-            self.logger.error(f"Selenium 签到失败: {e}")
+            self.logger.error(f"签到失败: {e}")
             return False
 
     def _navigate_to_signin_page(self) -> bool:
