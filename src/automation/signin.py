@@ -666,7 +666,7 @@ class SignInManager:
             )
 
             resp_text = resp.content.decode('utf-8', errors='replace')
-            self.logger.debug(f"签到响应(前200字): {resp_text[:200]}")
+            self.logger.debug(f"签到响应(前2000字): {resp_text[:2000]}")
 
             if '签到成功' in resp_text or '已签到' in resp_text or '今日已签到' in resp_text:
                 self.logger.info("✅ 签到成功")
