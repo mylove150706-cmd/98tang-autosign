@@ -35,7 +35,7 @@ class SignInManager:
         # 网站配置
         self.base_url = config.get("base_url", "https://www.sehuatang.org")
         self.home_url = self.base_url
-        self.sign_url = f"{self.base_url}/plugin.php?id=dsu_paulsign:sign"
+        self.sign_url = f"{self.base_url}/plugin.php?id=dd_sign"
 
         # 认证配置
         self.username = config.get("username", "")
@@ -632,63 +632,64 @@ class SignInManager:
             self.logger.error(f"检查签到状态时出错: {e}")
             return "unknown"
 
-    def _perform_signin_action(self) -> bool:
+        def _perform_signin_action(self) -> bool:
         try:
-            # 方式1：通过 formhash 直接 POST 签到（绕过 javascript:; 兼容性问题）
-            try:
-                formhash = self.driver.execute_script(
-                    "var el=document.querySelector('input[name=formhash]');return el?el.value:''"
-                )
-                if formhash:
-                    self.logger.info(f"使用 formhash 直接签到")
-                    response = self.driver.execute_async_script(f"""
-                        var cb = arguments[arguments.length - 1];
-                        fetch('{self.base_url}/plugin.php?id=dd_sign:sign', {{
-                            method: 'POST',
-                            headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
-                            body: 'formhash={formhash}'
-                        }})
-                        .then(r => r.text())
-                        .then(t => cb(t))
-                        .catch(e => cb('error: ' + e.message));
-                    """)
-                    self.logger.debug(f"签到响应: {response[:100] if response else '空'}")
-                    TimingManager.smart_wait(TimingManager.PAGE_LOAD_DELAY, 1.0, self.logger)
-                    if self._verify_signin_success():
-                        return True
-            except Exception as e:
-                self.logger.warning(f"直接 POST 签到失败: {e}")
+            import requests as req
 
-            # 方式2：通过 execute_script 点击按钮（备选）
-            sign_button_selectors = [
-                "div.ddpc_sign_btna a.ddpc_sign_btn_red",
-                "a.ddpc_sign_btn_red",
-                'a[class*="sign_btn"]',
-                'button[name="signsubmit"]',
-                'button[type="submit"][name="signsubmit"]',
-                'button.pn.pnc[name="signsubmit"]',
-                'button[type="submit"]',
-                'input[type="submit"][name="signsubmit"]',
-                '//button[@name="signsubmit"]',
-                '//button[contains(text(), "签到")]',
-                '//input[@type="submit" and @name="signsubmit"]',
-            ]
-
-            sign_button = self.element_finder.find_clickable_by_selectors(sign_button_selectors)
-            if not sign_button:
-                self.logger.error("未找到可点击的签到按钮")
+            # 从页面中提取 formhash
+            formhash = self.driver.execute_script(
+                "var el=document.querySelector('input[name=formhash]');return el?el.value:''"
+            )
+            if not formhash:
+                self.logger.error("未找到 formhash")
                 return False
 
-            self.logger.info("通过 JavaScript 点击签到按钮")
-            self.driver.execute_script("arguments[0].click();", sign_button)
-            TimingManager.smart_wait(TimingManager.PAGE_LOAD_DELAY, 1.0, self.logger)
+            self.logger.info(f"通过 requests 直接签到，formhash: {formhash}")
 
-            if self.handle_sign_verification():
-                return self._verify_signin_success()
-            return False
+            # 从 Selenium 获取 cookies 并转为 requests 格式
+            sel_cookies = self.driver.get_cookies()
+            s = req.Session()
+            for c in sel_cookies:
+                s.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': self.driver.current_url,
+            }
+
+            # 先访问一次签到页面获取完整 cookie
+            s.get(f'{self.base_url}/plugin.php?id=dd_sign', headers=headers, timeout=10)
+
+            # POST 签到
+            resp = s.post(
+                f'{self.base_url}/plugin.php?id=dd_sign:sign',
+                data={'formhash': formhash, 'signsubmit': 'yes'},
+                headers=headers,
+                timeout=10,
+            )
+
+            # 用 utf-8 带忽略方式解码响应
+            resp_text = resp.content.decode('utf-8', errors='replace')
+            self.logger.debug(f"签到响应(前200字): {resp_text[:200]}")
+
+            # 检查结果
+            if '签到成功' in resp_text or '已签到' in resp_text or '今日已签到' in resp_text:
+                self.logger.info("✅ 签到成功")
+                return True
+            elif '已经签到' in resp_text:
+                self.logger.info("✅ 今日已签到")
+                return True
+
+            self.logger.warning("签到响应中未找到成功标志，状态待验证")
+            # 刷新页面用旧的验证逻辑确认
+            self.driver.refresh()
+            TimingManager.smart_wait(TimingManager.PAGE_LOAD_DELAY, 1.0, self.logger)
+            status = self._check_signin_status()
+            return status == "already_signed"
 
         except Exception as e:
-            self.logger.error(f"执行签到操作时出错: {e}")
+            self.logger.error(f"直接签到失败: {e}")
             return False
     def _navigate_to_signin_page(self) -> bool:
         """
