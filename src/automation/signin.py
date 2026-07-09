@@ -668,6 +668,17 @@ class SignInManager:
             resp_text = resp.content.decode('utf-8', errors='replace')
             self.logger.debug(f"签到响应(前2000字): {resp_text[:2000]}")
 
+            # 提取 Discuz! 错误提示
+            msg_match = re.search(r'<div[^>]*id="messagetext"[^>]*>(.*?)</div>', resp_text, re.DOTALL)
+            if msg_match:
+                err_msg = re.sub(r'<[^>]+>', '', msg_match.group(1)).strip()
+                self.logger.info(f"签到服务器返回: {err_msg[:300]}")
+            else:
+                msg_match = re.search(r'<div class="alert_[a-z]+"[^>]*>(.*?)</div>', resp_text, re.DOTALL)
+                if msg_match:
+                    err_msg = re.sub(r'<[^>]+>', '', msg_match.group(1)).strip()
+                    self.logger.info(f"签到服务器返回: {err_msg[:300]}")
+
             if '签到成功' in resp_text or '已签到' in resp_text or '今日已签到' in resp_text:
                 self.logger.info("✅ 签到成功")
                 return True
@@ -684,6 +695,7 @@ class SignInManager:
         except Exception as e:
             self.logger.error(f"直接签到失败: {e}")
             return False
+
     def _navigate_to_signin_page(self) -> bool:
         """
         导航到签到页面并验证URL
