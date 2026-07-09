@@ -634,66 +634,50 @@ class SignInManager:
 
     def _perform_signin_action(self) -> bool:
         try:
-            import requests as req
+            self.logger.info("通过 Selenium 点击签到按钮")
 
-            formhash = self.driver.execute_script(
-                "var el=document.querySelector('input[name=formhash]');return el?el.value:''"
+            # 查找红色签到按钮
+            sign_btn = self.element_finder.find_by_selectors(
+                ["a.ddpc_sign_btn_red", "//a[contains(@class, 'ddpc_sign_btn_red')]"]
             )
-            if not formhash:
-                self.logger.error("未找到 formhash")
+            if not sign_btn:
+                self.logger.error("未找到签到按钮")
                 return False
 
-            self.logger.info(f"通过 requests 直接签到，formhash: {formhash}")
+            self.logger.info("找到签到按钮，准备点击")
+            BrowserHelper.safe_click(self.driver, sign_btn, self.logger)
+            TimingManager.smart_wait(3.0, 1.0, self.logger)
 
-            sel_cookies = self.driver.get_cookies()
-            s = req.Session()
-            for c in sel_cookies:
-                s.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
+            # 检查是否有弹窗 alert（Discuz! 签到成功通常有 alert 提示）
+            try:
+                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support import expected_conditions as EC
+                alert = WebDriverWait(self.driver, 5).until(EC.alert_is_present())
+                alert_text = alert.text
+                self.logger.info(f"签到弹窗: {alert_text}")
+                alert.accept()
+                TimingManager.smart_wait(2.0, 1.0, self.logger)
+                self.driver.refresh()
+                TimingManager.smart_wait(TimingManager.PAGE_LOAD_DELAY, 1.0, self.logger)
+                status = self._check_signin_status()
+                return status == "already_signed"
+            except:
+                self.logger.debug("未检测到 alert 弹窗，检查页面变化")
 
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': self.driver.current_url,
-            }
-
-            s.get(f'{self.base_url}/plugin.php?id=dd_sign', headers=headers, timeout=10)
-
-            resp = s.post(
-                f'{self.base_url}/plugin.php?id=dd_sign:sign',
-                data={'formhash': formhash, 'signsubmit': 'yes'},
-                headers=headers,
-                timeout=10,
-            )
-
-            resp_text = resp.content.decode('utf-8', errors='replace')
-            self.logger.debug(f"签到响应(前2000字): {resp_text[:2000]}")
-
-            # 提取 Discuz! 错误提示
-            msg_match = re.search(r'<div[^>]*id="messagetext"[^>]*>(.*?)</div>', resp_text, re.DOTALL)
-            if msg_match:
-                err_msg = re.sub(r'<[^>]+>', '', msg_match.group(1)).strip()
-                self.logger.info(f"签到服务器返回: {err_msg[:300]}")
-            else:
-                msg_match = re.search(r'<div class="alert_[a-z]+"[^>]*>(.*?)</div>', resp_text, re.DOTALL)
-                if msg_match:
-                    err_msg = re.sub(r'<[^>]+>', '', msg_match.group(1)).strip()
-                    self.logger.info(f"签到服务器返回: {err_msg[:300]}")
-
-            if '签到成功' in resp_text or '已签到' in resp_text or '今日已签到' in resp_text:
-                self.logger.info("✅ 签到成功")
-                return True
-            elif '已经签到' in resp_text:
-                self.logger.info("✅ 今日已签到")
+            # 检查页面是否有成功提示消息
+            page_text = self.driver.page_source
+            if any(kw in page_text for kw in ['签到成功', '已签到', '今日已签到']):
+                self.logger.info("✅ 页面检测到签到成功")
                 return True
 
-            self.logger.warning("签到响应中未找到成功标志，状态待验证")
+            # 刷新页面并检查状态
             self.driver.refresh()
             TimingManager.smart_wait(TimingManager.PAGE_LOAD_DELAY, 1.0, self.logger)
             status = self._check_signin_status()
             return status == "already_signed"
 
         except Exception as e:
-            self.logger.error(f"直接签到失败: {e}")
+            self.logger.error(f"Selenium 签到失败: {e}")
             return False
 
     def _navigate_to_signin_page(self) -> bool:
