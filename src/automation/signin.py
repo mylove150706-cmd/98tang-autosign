@@ -632,11 +632,10 @@ class SignInManager:
             self.logger.error(f"检查签到状态时出错: {e}")
             return "unknown"
 
-        def _perform_signin_action(self) -> bool:
+    def _perform_signin_action(self) -> bool:
         try:
             import requests as req
 
-            # 从页面中提取 formhash
             formhash = self.driver.execute_script(
                 "var el=document.querySelector('input[name=formhash]');return el?el.value:''"
             )
@@ -646,7 +645,6 @@ class SignInManager:
 
             self.logger.info(f"通过 requests 直接签到，formhash: {formhash}")
 
-            # 从 Selenium 获取 cookies 并转为 requests 格式
             sel_cookies = self.driver.get_cookies()
             s = req.Session()
             for c in sel_cookies:
@@ -658,10 +656,8 @@ class SignInManager:
                 'Referer': self.driver.current_url,
             }
 
-            # 先访问一次签到页面获取完整 cookie
             s.get(f'{self.base_url}/plugin.php?id=dd_sign', headers=headers, timeout=10)
 
-            # POST 签到
             resp = s.post(
                 f'{self.base_url}/plugin.php?id=dd_sign:sign',
                 data={'formhash': formhash, 'signsubmit': 'yes'},
@@ -669,11 +665,9 @@ class SignInManager:
                 timeout=10,
             )
 
-            # 用 utf-8 带忽略方式解码响应
             resp_text = resp.content.decode('utf-8', errors='replace')
             self.logger.debug(f"签到响应(前200字): {resp_text[:200]}")
 
-            # 检查结果
             if '签到成功' in resp_text or '已签到' in resp_text or '今日已签到' in resp_text:
                 self.logger.info("✅ 签到成功")
                 return True
@@ -682,7 +676,6 @@ class SignInManager:
                 return True
 
             self.logger.warning("签到响应中未找到成功标志，状态待验证")
-            # 刷新页面用旧的验证逻辑确认
             self.driver.refresh()
             TimingManager.smart_wait(TimingManager.PAGE_LOAD_DELAY, 1.0, self.logger)
             status = self._check_signin_status()
